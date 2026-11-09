@@ -1,0 +1,16 @@
+{
+  "name": "shodanviewer",
+  "version-string": "0.1.0",
+  "builtin-baseline": "ec48c11eae9448c8c6e7739d93e06fa2433aa95f",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "default-features": false,
+      "features": [
+        "network", "sql-sqlite", "widgets", "concurrent",
+        "png", "jpeg", "zstd", "brotli",
+        "freetype", "harfbuzz", "pcre2", "doubleconversion", "thread"
+      ]
+    }
+  ]
+}

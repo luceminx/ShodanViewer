@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+jobs:
+  windows-static:
+    name: windows-x64-single-file
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from CMakeLists
+        id: ver
+        shell: bash
+        run: |
+          [ -f CMakeLists.txt ] || { echo "::error::CMakeLists.txt not found"; exit 1; }
+          V=$(tr '\n\r' '  ' < CMakeLists.txt | awk 'match($0, /project[ \t]*\([ \t]*ShodanViewer[ \t]+VERSION[ \t]+"?[0-9][0-9.]*/) { s = substr($0, RSTART, RLENGTH); sub(/.*VERSION[ \t]+"?/, "", s); print s; exit }')
+          if [ -z "$V" ]; then
+            echo "::error::Cannot extract version - project() lines:"; grep -n "project" CMakeLists.txt || true; exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "App version: $V"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF_NAME#v}"
+            [ "$TAG" = "$V" ] || { echo "::error::Tag v$TAG != CMakeLists version $V"; exit 1; }
+          fi
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: ${{ env.VCPKG_ROOT }}
+
+      # ── 改动1:文件式二进制缓存,绕开已移除的 x-gha ──
+      - name: Restore vcpkg binary cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/*.cmake') }}
+          restore-keys: vcpkg-win-
+
+      - name: Ensure vcpkg binary cache dir exists   # ← 新增这 3 行
+        shell: bash
+        run: mkdir -p "${{ github.workspace }}/vcpkg-bincache"
+
+      - name: Configure
+        # ── 改动2:显式覆盖 action 注入的失效缓存配置 ──
+        env:
+          VCPKG_BINARY_SOURCES: 'clear;default,readwrite'
+          VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
+        # ── 改动3+4:换 release-only triplet + 声明 overlay 目录 ──
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static-release
+          -DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/cmake
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Check DLL imports (informational)
+        shell: pwsh
+        run: |
+          $exe = "build/Release/ShodanViewer.exe"
+          if (Get-Command llvm-objdump -ErrorAction SilentlyContinue) {
+            llvm-objdump -p $exe | Select-String "DLL Name"
+          } else {
+            Write-Host "(llvm-objdump not on PATH, skipped)"
+          }
+
+      - name: Package (single-file exe)
+        shell: pwsh
+        run: |
+          Copy-Item build/Release/ShodanViewer.exe `
+            ShodanViewer-${{ steps.ver.outputs.version }}-windows-x64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: ShodanViewer-*.exe
+          if-no-files-found: error
+      - name: Save vcpkg binary cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'                # 失败也保存,保持我们上轮的目的
+        continue-on-error: true     # 缓存 key 已存在时 GitHub 会警告,忽略即可
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg-bincache
+          key: vcpkg-win-${{ hashFiles('vcpkg.json', 'cmake/*.cmake') }}
+
+  release:
+    name: Release
+    needs: windows-static
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ShodanViewer-*
+          generate_release_notes: true

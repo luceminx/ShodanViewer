@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>nyancat.gif</file>
+		<file>space.png</file>
+    </qresource>
+</RCC>
